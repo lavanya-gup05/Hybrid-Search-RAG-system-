@@ -1,0 +1,17 @@
+services:
+  hybrid-rag:
+    build: .
+    ports:
+      - "8501:8501"
+    env_file:
+      - .env
+    volumes:
+      # Chroma's index survives container restarts/rebuilds.
+      - index-data:/app/index
+      # Model weights (~120MB) are cached here instead of re-downloading on
+      # every container recreation.
+      - hf-cache:/app/.cache/huggingface
+
+volumes:
+  index-data:
+  hf-cache:

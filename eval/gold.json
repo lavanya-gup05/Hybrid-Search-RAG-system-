@@ -1,0 +1,42 @@
+[
+  {
+    "question": "What is the warranty period for the X400 pump?",
+    "must_contain": ["X400", "24 months"]
+  },
+  {
+    "question": "How long does someone have to claim reimbursement for travel?",
+    "must_contain": ["30 days"]
+  },
+  {
+    "question": "What error code shows up when the coolant sensor fails?",
+    "must_contain": ["E-217"]
+  },
+  {
+    "question": "Can contractors expense client dinners?",
+    "must_contain": ["contractors", "not eligible"]
+  },
+  {
+    "question": "What maintenance is required before the first 500 hours?",
+    "must_contain": ["500 hours", "filter"]
+  },
+  {
+    "question": "What is the API rate limit on the Team tier?",
+    "must_contain": ["100 requests", "Team"]
+  },
+  {
+    "question": "How long is data recoverable after cancellation?",
+    "must_contain": ["30 days", "recoverable"]
+  },
+  {
+    "question": "What does error RL-429 mean?",
+    "must_contain": ["RL-429", "rate limit"]
+  },
+  {
+    "question": "How much storage does the discontinued Business tier get?",
+    "must_contain": ["Business tier", "500GB"]
+  },
+  {
+    "question": "What is the guaranteed first response time for Enterprise priority tickets?",
+    "must_contain": ["Enterprise", "1 business hour"]
+  }
+]
