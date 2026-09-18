@@ -41,16 +41,27 @@ class Pipeline:
             raise ValueError("No readable documents found.")
         return cls(HybridRetriever(chunks))
 
-    def run(self, question: str, verify: bool = CFG.verify,
-            mode: str = "flag") -> RAGResult:
+    def run(self, question: str, verify: bool = CFG.verify, mode: str = "flag",
+            fused_top_k: int = CFG.fused_top_k,
+            final_top_k: int = CFG.final_top_k) -> RAGResult:
+        """fused_top_k/final_top_k are accepted as arguments (not read off the
+        shared CFG singleton) so that per-user UI sliders in a multi-session
+        deployment can't leak into other users' concurrent requests."""
+        question = (question or "").strip()
+        if not question:
+            raise ValueError("Question is empty.")
+        if len(question) > CFG.max_question_chars:
+            raise ValueError(
+                f"Question is too long ({len(question)} chars, "
+                f"max {CFG.max_question_chars}).")
         t = {}
 
         t0 = time.time()
-        candidates = self.retriever.search(question, CFG.fused_top_k)
+        candidates = self.retriever.search(question, fused_top_k)
         t["retrieve"] = round(time.time() - t0, 2)
 
         t0 = time.time()
-        ranked = self.reranker.rerank(question, candidates, CFG.final_top_k)
+        ranked = self.reranker.rerank(question, candidates, final_top_k)
         t["rerank"] = round(time.time() - t0, 2)
         contexts = [c for c, _ in ranked]
         scores = [s for _, s in ranked]

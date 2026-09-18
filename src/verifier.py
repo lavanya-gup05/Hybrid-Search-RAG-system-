@@ -19,7 +19,7 @@ import re
 from dataclasses import dataclass
 from typing import List
 
-from groq import Groq
+from groq import Groq, GroqError
 
 from .config import CFG
 from .ingest import Chunk
@@ -48,20 +48,25 @@ class ClaimCheck:
 
 class Verifier:
     def __init__(self, api_key: str = CFG.groq_api_key, model: str = CFG.llm_model):
-        self.client = Groq(api_key=api_key)
+        self.client = Groq(api_key=api_key, timeout=CFG.llm_timeout_s)
         self.model = model
 
     def _judge(self, claim: str, passage: str) -> str:
-        resp = self.client.chat.completions.create(
-            model=self.model,
-            temperature=0.0,
-            max_tokens=5,
-            messages=[
-                {"role": "system", "content": JUDGE_SYSTEM},
-                {"role": "user",
-                 "content": f"PASSAGE:\n{passage}\n\nCLAIM:\n{claim}"},
-            ],
-        )
+        try:
+            resp = self.client.chat.completions.create(
+                model=self.model,
+                temperature=0.0,
+                max_tokens=5,
+                messages=[
+                    {"role": "system", "content": JUDGE_SYSTEM},
+                    {"role": "user",
+                     "content": f"PASSAGE:\n{passage}\n\nCLAIM:\n{claim}"},
+                ],
+            )
+        except GroqError:
+            # Fail closed: if the judge call itself fails (timeout, rate
+            # limit, outage) we must not let the claim through as SUPPORTED.
+            return "UNSUPPORTED"
         out = resp.choices[0].message.content.strip().upper()
         for label in ("SUPPORTED", "PARTIAL", "UNSUPPORTED"):
             if label in out:

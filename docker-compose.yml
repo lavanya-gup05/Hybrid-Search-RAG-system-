@@ -5,6 +5,11 @@ services:
       - "8501:8501"
     env_file:
       - .env
+    restart: unless-stopped
+    # torch + the embedding/reranking models are memory-hungry; cap the
+    # container so a burst of concurrent uploads can't take down the host.
+    mem_limit: 4g
+    cpus: 2
     volumes:
       # Chroma's index survives container restarts/rebuilds.
       - index-data:/app/index
