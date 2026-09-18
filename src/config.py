@@ -29,5 +29,12 @@ class Config:
 
     index_dir: str = "index"
 
+    # --- production hardening ---
+    llm_timeout_s: float = 30.0        # per-call Groq timeout; avoid a hung session
+    max_question_chars: int = 500      # reject absurd inputs before they hit retrieval
+    max_upload_mb: int = 20            # per-file upload cap
+    max_uploads: int = 10              # per-session file count cap
+    session_min_interval_s: float = 3.0  # simple per-session rate limit for the query box
+
 
 CFG = Config()

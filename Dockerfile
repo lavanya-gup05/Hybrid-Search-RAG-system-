@@ -31,6 +31,13 @@ COPY . .
 ENV HF_HOME=/app/.cache/huggingface
 RUN mkdir -p /app/index /app/.cache/huggingface
 
+# Don't run the app as root inside the container: create a dedicated user and
+# hand it ownership of the writable paths (app dir, index, model cache, and
+# /tmp, which the app uses for per-session upload and index directories).
+RUN useradd --create-home --uid 1000 appuser \
+    && chown -R appuser:appuser /app /tmp
+USER appuser
+
 EXPOSE 8501
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=60s \

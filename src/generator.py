@@ -6,7 +6,7 @@ from __future__ import annotations
 import re
 from typing import List, Tuple
 
-from groq import Groq
+from groq import Groq, GroqError
 
 from .config import CFG
 from .ingest import Chunk
@@ -44,19 +44,22 @@ class Generator:
     def __init__(self, api_key: str = CFG.groq_api_key, model: str = CFG.llm_model):
         if not api_key:
             raise RuntimeError("GROQ_API_KEY is not set.")
-        self.client = Groq(api_key=api_key)
+        self.client = Groq(api_key=api_key, timeout=CFG.llm_timeout_s)
         self.model = model
 
     def answer(self, question: str, chunks: List[Chunk]) -> str:
         ctx = format_context(chunks)
-        resp = self.client.chat.completions.create(
-            model=self.model,
-            temperature=0.0,
-            max_tokens=700,
-            messages=[
-                {"role": "system", "content": SYSTEM},
-                {"role": "user",
-                 "content": f"CONTEXT:\n{ctx}\n\nQUESTION: {question}"},
-            ],
-        )
+        try:
+            resp = self.client.chat.completions.create(
+                model=self.model,
+                temperature=0.0,
+                max_tokens=700,
+                messages=[
+                    {"role": "system", "content": SYSTEM},
+                    {"role": "user",
+                     "content": f"CONTEXT:\n{ctx}\n\nQUESTION: {question}"},
+                ],
+            )
+        except GroqError as e:
+            raise RuntimeError(f"Generation failed (LLM provider error): {e}") from e
         return resp.choices[0].message.content.strip()

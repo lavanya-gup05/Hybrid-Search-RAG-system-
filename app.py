@@ -8,8 +8,12 @@ actions. The gradient title is the one deliberately bold moment; everything
 around it stays flat and disciplined.
 """
 
+import html
+import logging
 import os
 import tempfile
+import time
+import uuid
 
 import pandas as pd
 import streamlit as st
@@ -21,6 +25,17 @@ from src.reranker import Reranker
 from src.generator import Generator
 from src.verifier import Verifier
 from src.pipeline import Pipeline
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("hybrid_rag")
+
+# Each browser tab gets its own id, so its Chroma collection and index
+# directory never collide with another concurrent user's — Chroma persistence
+# and st.cache_resource are process-wide, not per-session, by default.
+if "session_id" not in st.session_state:
+    st.session_state.session_id = uuid.uuid4().hex[:12]
+if "last_query_at" not in st.session_state:
+    st.session_state.last_query_at = 0.0
 
 st.set_page_config(page_title="Hybrid RAG + Citation Verification",
                    page_icon="🔎", layout="wide")
@@ -213,10 +228,16 @@ def load_models():
 
 
 @st.cache_resource(show_spinner="Indexing documents…")
-def build_pipeline(file_sig, paths, api_key):
+def build_pipeline(session_id, file_sig, paths, api_key):
+    """session_id is part of the cache key so two browser tabs never share a
+    Chroma collection or a cached Pipeline instance — without it, one user's
+    upload would silently rebuild the index out from under another user's
+    in-flight query (HybridRetriever(rebuild=True) drops the collection)."""
     embedder, reranker = load_models()
     chunks = load_corpus(paths)
-    retriever = HybridRetriever(chunks, embedder=embedder)
+    persist_dir = os.path.join(tempfile.gettempdir(), "hybrid_rag_index", session_id)
+    os.makedirs(persist_dir, exist_ok=True)
+    retriever = HybridRetriever(chunks, embedder=embedder, persist_dir=persist_dir)
     return Pipeline(retriever, reranker,
                     Generator(api_key=api_key), Verifier(api_key=api_key)), len(chunks)
 
@@ -237,8 +258,13 @@ def verdict_class(v: str) -> tuple[str, str, str]:
 with st.sidebar:
     with st.container(border=True):
         st.markdown('<div class="side-label">🔑 Setup</div>', unsafe_allow_html=True)
-        api_key = st.text_input("Groq API key", type="password",
-                                value=os.getenv("GROQ_API_KEY", ""))
+        # Do NOT default this field to os.getenv("GROQ_API_KEY") in a shared
+        # deployment: Streamlit ships the input's default value to every
+        # client's browser DOM, which would leak the server's own key to
+        # every visitor. Each user pastes their own key instead. If this is
+        # genuinely single-user/local, set HYBRID_RAG_PREFILL_KEY=1 to opt in.
+        prefill = os.getenv("GROQ_API_KEY", "") if os.getenv("HYBRID_RAG_PREFILL_KEY") else ""
+        api_key = st.text_input("Groq API key", type="password", value=prefill)
 
     with st.container(border=True):
         st.markdown('<div class="side-label">📄 Documents</div>', unsafe_allow_html=True)
@@ -248,8 +274,12 @@ with st.sidebar:
 
     with st.container(border=True):
         st.markdown('<div class="side-label">🎛️ Retrieval</div>', unsafe_allow_html=True)
-        CFG.final_top_k = st.slider("Passages sent to the LLM", 3, 10, 5)
-        CFG.fused_top_k = st.slider("Candidates into reranker", 5, 40, 20)
+        # Kept as local variables and passed explicitly into pipeline.run();
+        # never written back to the shared CFG singleton, which is process-wide
+        # and would otherwise leak one user's slider settings into another
+        # user's concurrent request.
+        final_top_k = st.slider("Passages sent to the LLM", 3, 10, CFG.final_top_k)
+        fused_top_k = st.slider("Candidates into reranker", 5, 40, CFG.fused_top_k)
 
     with st.container(border=True):
         st.markdown('<div class="side-label">✅ Verification</div>', unsafe_allow_html=True)
@@ -279,6 +309,17 @@ st.markdown("""
 
 # ------------------------------- indexing ------------------------------------
 
+if uploads and len(uploads) > CFG.max_uploads:
+    st.error(f"Too many files ({len(uploads)}). Max {CFG.max_uploads} per session.")
+    st.stop()
+
+oversized = [u.name for u in (uploads or [])
+            if u.size > CFG.max_upload_mb * 1024 * 1024]
+if oversized:
+    st.error(f"These files exceed {CFG.max_upload_mb} MB and were rejected: "
+             f"{', '.join(oversized)}")
+    st.stop()
+
 paths = []
 if uploads:
     tmpdir = tempfile.mkdtemp()
@@ -299,20 +340,48 @@ if not paths:
     st.stop()
 
 sig = tuple(sorted(os.path.basename(p) for p in paths))
-pipeline, n_chunks = build_pipeline(sig, paths, api_key)
+try:
+    pipeline, n_chunks = build_pipeline(st.session_state.session_id, sig, paths, api_key)
+except Exception as e:
+    logger.exception("Indexing failed")
+    st.error("Couldn't index those documents. Check the file formats and try again.")
+    st.stop()
 st.success(f"Indexed {n_chunks} chunks from {len(sig)} source(s).")
 
 # ------------------------------- query ---------------------------------------
 
 question = st.text_input("Ask a question about the documents",
-                         placeholder="e.g. What were the drivers of margin decline?")
+                         placeholder="e.g. What were the drivers of margin decline?",
+                         max_chars=CFG.max_question_chars)
 
 if question:
-    with st.spinner("Retrieving, reranking, verifying…"):
-        res = pipeline.run(question, verify=verify, mode=mode)
+    elapsed = time.time() - st.session_state.last_query_at
+    if elapsed < CFG.session_min_interval_s:
+        st.warning("You're querying faster than the app allows — please wait "
+                   f"{CFG.session_min_interval_s - elapsed:.1f}s and try again.")
+        st.stop()
+    if len(question) > CFG.max_question_chars:
+        st.error(f"Question is too long (max {CFG.max_question_chars} characters).")
+        st.stop()
+
+    st.session_state.last_query_at = time.time()
+    try:
+        with st.spinner("Retrieving, reranking, verifying…"):
+            res = pipeline.run(question, verify=verify, mode=mode,
+                               fused_top_k=fused_top_k, final_top_k=final_top_k)
+    except Exception as e:
+        logger.exception("Pipeline run failed")
+        st.error("Something went wrong answering that question. "
+                 "This has been logged — please try again in a moment.")
+        st.stop()
 
     st.markdown('<div class="section-heading">💬 Answer</div>', unsafe_allow_html=True)
-    st.markdown(f'<div class="answer-card">{res.final_answer}</div>',
+    # The answer text originates from the LLM (which in turn saw uploaded
+    # document content), so it is untrusted input as far as the browser is
+    # concerned. Escape it before embedding in a raw HTML div so a document
+    # that tricks the model into echoing "<script>…</script>" can't execute.
+    safe_answer = html.escape(res.final_answer)
+    st.markdown(f'<div class="answer-card">{safe_answer}</div>',
                unsafe_allow_html=True)
 
     if res.metrics:
@@ -335,12 +404,14 @@ if question:
             for c in res.checks:
                 card_cls, badge_cls, label = verdict_class(c.verdict)
                 cites = ", ".join(f"[{i}]" for i in c.citations) or "—"
+                safe_sentence = html.escape(c.sentence)
+                safe_per_citation = html.escape(str(c.per_citation))
                 st.markdown(f"""
                 <div class="claim-card {card_cls}">
                   <div class="verdict-badge {badge_cls}">{label}</div>
                   <div>
-                    <div class="claim-text">{c.sentence}</div>
-                    <div class="claim-meta">Cites {cites} · {c.per_citation}</div>
+                    <div class="claim-text">{safe_sentence}</div>
+                    <div class="claim-meta">Cites {cites} · {safe_per_citation}</div>
                   </div>
                 </div>
                 """, unsafe_allow_html=True)
@@ -353,8 +424,8 @@ if question:
 
     with tab3:
         st.json({"timings_sec": res.timings,
-                 "config": {"fused_top_k": CFG.fused_top_k,
-                            "final_top_k": CFG.final_top_k,
+                 "config": {"fused_top_k": fused_top_k,
+                            "final_top_k": final_top_k,
                             "embed": CFG.embed_model,
                             "rerank": CFG.rerank_model,
                             "llm": CFG.llm_model}})

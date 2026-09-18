@@ -97,8 +97,9 @@ def load_corpus(paths: List[str]) -> List[Chunk]:
     chunks: List[Chunk] = []
     for p in paths:
         if os.path.isdir(p):
-            for root, _, files in os.walk(p):
-                for fn in files:
+            for root, dirs, files in os.walk(p):
+                dirs.sort()  # deterministic traversal across filesystems
+                for fn in sorted(files):
                     if fn.lower().endswith((".txt", ".md", ".pdf")):
                         fp = os.path.join(root, fn)
                         chunks += chunk_text(read_file(fp), os.path.basename(fp))
